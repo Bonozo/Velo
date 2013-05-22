@@ -151,6 +151,7 @@ containing a value of this type.
         public static final int colorSelected=0x7f050057;
         public static final int controlPanel=0x7f050014;
         public static final int cpu_abi=0x7f05009a;
+        public static final int currentpoints=0x7f05009f;
         public static final int currentspeed=0x7f05004f;
         public static final int currenttime=0x7f050015;
         public static final int detail_label=0x7f050049;
@@ -181,8 +182,8 @@ containing a value of this type.
         public static final int img_next=0x7f05001c;
         public static final int img_play=0x7f05001a;
         public static final int img_prev=0x7f050018;
-        public static final int img_vp_backward=0x7f0500a1;
-        public static final int img_vp_forward=0x7f0500a2;
+        public static final int img_vp_backward=0x7f0500a2;
+        public static final int img_vp_forward=0x7f0500a3;
         public static final int img_vp_help=0x7f050054;
         public static final int img_vp_play=0x7f050053;
         public static final int info_icon=0x7f050038;
@@ -205,14 +206,14 @@ containing a value of this type.
         public static final int maxaudioqsizeloopSelected=0x7f050082;
         public static final int maxvideoqsizeloopSelected=0x7f05007f;
         public static final int mediaInfocontainer=0x7f05000b;
-        public static final int menu_settings=0x7f0500a3;
+        public static final int menu_settings=0x7f0500a4;
         public static final int minvideoqsizeloopSelected=0x7f05007c;
         public static final int multiselect_icon=0x7f05009c;
         public static final int name_label=0x7f050039;
         public static final int num_processes_label=0x7f05004b;
         public static final int ovelaycontainer=0x7f05004c;
-        public static final int pad1=0x7f05009f;
-        public static final int pad2=0x7f0500a0;
+        public static final int pad1=0x7f0500a0;
+        public static final int pad2=0x7f0500a1;
         public static final int path_label=0x7f05003a;
         public static final int progress=0x7f050050;
         public static final int progressbar=0x7f050016;

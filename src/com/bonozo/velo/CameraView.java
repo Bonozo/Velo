@@ -68,9 +68,9 @@ public class CameraView extends Activity implements SurfaceHolder.Callback {
 		prPlaybackBtn.setOnClickListener(new View.OnClickListener() {
 			// @Override
 			public void onClick(View v) {
-				// Intent AVPlayerMain = new Intent(CameraView.this,
-				// AVPlayerMain.class);
-				// startActivity(AVPlayerMain);
+				Intent AVPlayerMain = new Intent(CameraView.this,
+						AVPlayerMain.class);
+				startActivity(AVPlayerMain);
 
 				CameraView.this.finish();
 			}

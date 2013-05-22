@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
 
-    <string name="app_version">0.1.4.3</string><string name="app_name">Velo</string>
+    <string name="app_version">0.2.2</string><string name="app_name">Velo</string>
     <string name="feedback">Feedback</string>
     <string name="mailid">E-mail ID (optional)</string>
     <string name="submit">Submit</string>

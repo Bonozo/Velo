@@ -52,6 +52,18 @@
 #include "subreader.h"
 #include "broov_font.h"
 
+#include <iostream>
+#include <stdio.h>
+#include <stdlib.h>
+#include <vector>
+#include <unistd.h>
+#include <map>
+#include <math.h>
+#include <algorithm>
+
+#include <ctype.h>
+#include <stdio.h>
+
 #ifdef BROOV_X86_RELEASE
 #else
 #include "yuv2rgb.h"
@@ -252,6 +264,34 @@ double foundPoints[2][4] = { { 0, 0, 0, 0 }, { 0, 0, 0, 0 } };
 int av2ipl(AVFrame *src, IplImage *dst);
 
 bool pointIn(cv::Point2f point, double radius);
+
+int pos = 0, frmno = 0;
+
+// std::map<int, std::vector<std::vector<double> > > store;
+
+// std::map<int, std::vector<std::vector<double> > > candidates;
+
+struct WeightedData {
+	double x;
+	double y;
+	double weight;
+	double a;
+};
+
+const int posMax = 10;
+
+WeightedData data[posMax];
+
+int zeros = 0;
+double range = 0.0;
+double medDist = 0.0;
+double avA = 0.0;
+double avW = 0.0;
+
+cv::Rect rect;
+cv::Rect pitcher, catcher;
+
+static int struct_pos = 0;
 
 jobject parentObj;
 
@@ -1453,23 +1493,6 @@ static void alloc_rgb_picture(void *userdata) {
 
 }
 
-int av2ipl(AVFrame *src, IplImage *dst) {
-
-	struct SwsContext *swscontext = sws_getContext(src->width, src->height,
-			PIX_FMT_YUV420P, dst->width, dst->height, PIX_FMT_RGB24,
-			SWS_BILINEAR, 0, 0, 0);
-
-	if (swscontext == 0)
-		return (0);
-
-	int linesize[4] = { dst->widthStep, 0, 0, 0 };
-
-	sws_scale(swscontext, src->data, src->linesize, 0, src->height,
-			(uint8_t **) &(dst->imageData), linesize);
-
-	return 1;
-}
-
 double euclideanDist(cv::Point p, cv::Point q) {
 	cv::Point diff = p - q;
 	return std::sqrt((double) (diff.x * diff.x + diff.y * diff.y));
@@ -1499,6 +1522,272 @@ cv::Point grid2coord(cv::Point currentPoint, cv::Point gridCenter,
 	return cv::Point(retX, retY);
 }
 
+void findQuadraticFactors(WeightedData *data, double &a, double &b, double &c,
+		unsigned int const datasize) {
+	double w1 = 0.0;
+	double wx = 0.0, wx2 = 0.0, wx3 = 0.0, wx4 = 0.0;
+	double wy = 0.0, wyx = 0.0, wyx2 = 0.0;
+	double tmpx, tmpy;
+	double den;
+
+	for (unsigned int i = 0; i < datasize; ++i) {
+		double x = data[i].x;
+		double y = data[i].y;
+		double w = data[i].weight;
+
+		w1 += w;
+		tmpx = w * x;
+		wx += tmpx;
+		tmpx *= x;
+		wx2 += tmpx;
+		tmpx *= x;
+		wx3 += tmpx;
+		tmpx *= x;
+		wx4 += tmpx;
+		tmpy = w * y;
+		wy += tmpy;
+		tmpy *= x;
+		wyx += tmpy;
+		tmpy *= x;
+		wyx2 += tmpy;
+	}
+
+	den = wx2 * wx2 * wx2 - 2.0 * wx3 * wx2 * wx + wx4 * wx * wx
+			+ wx3 * wx3 * w1 - wx4 * wx2 * w1;
+	if (den == 0.0) {
+		a = 0.0;
+		b = 0.0;
+		c = 0.0;
+	} else {
+		a = (wx * wx * wyx2 - wx2 * w1 * wyx2 - wx2 * wx * wyx + wx3 * w1 * wyx
+				+ wx2 * wx2 * wy - wx3 * wx * wy) / den;
+		b = (-wx2 * wx * wyx2 + wx3 * w1 * wyx2 + wx2 * wx2 * wyx
+				- wx4 * w1 * wyx - wx3 * wx2 * wy + wx4 * wx * wy) / den;
+		c = (wx2 * wx2 * wyx2 - wx3 * wx * wyx2 - wx3 * wx2 * wyx
+				+ wx4 * wx * wyx + wx3 * wx3 * wy - wx4 * wx2 * wy) / den;
+	}
+
+}
+
+double findY(double const a, double const b, double const c, double const x) {
+	return a * x * x + b * x + c;
+}
+
+void sort_on_x(WeightedData s[], int n) {
+	WeightedData temp; // Local variable used to swap records
+
+	for (int i = 0; i < n; i++) {
+		for (int i = 0; i < n; i++) {
+			// If s[i].student_number is greater than s[i+1].student_number, swap the records
+			if (s[i].x > s[i + 1].x) {
+				temp = s[i];
+				s[i] = s[i + 1];
+				s[i + 1] = temp;
+			}
+		}
+	}
+}
+
+void sort_on_weight(WeightedData s[], int n) {
+	WeightedData temp; // Local variable used to swap records
+
+	for (int i = 0; i < n; i++) {
+		for (int i = 0; i < n; i++) {
+			// If s[i].student_number is greater than s[i+1].student_number, swap the records
+			if (s[i].weight > s[i + 1].weight) {
+				temp = s[i];
+				s[i] = s[i + 1];
+				s[i + 1] = temp;
+			}
+		}
+	}
+}
+
+int getAvailableSlot(WeightedData s[], int n, double weight) {
+	// sort_on_x(s, n);
+
+	int slot = -1;
+	/*double slot_weight = 0;
+	 zeros = 0;
+	 range = 0.0;
+	 medDist = 0.0;
+	 avA = 0.0;
+	 avW = 0.0;
+
+	 double lbound = -1;
+	 double ubound = -1;
+	 double sumA = 0.0;
+	 double sumW = 0.0;
+	 double distSum = 0.0;
+	 int distCand = 0;
+
+	 __android_log_print(ANDROID_LOG_INFO, "BroovPlayer",
+	 "+++++++++++++++ SEARCHING FOR AVAILABLE SLOT ++++++++++++++++");
+	 for (int i = 0; i < n; i++) {
+
+	 if (s[i].weight < weight && s[i].weight < slot_weight) {
+	 slot = i;
+	 slot_weight = s[i].weight;
+	 }
+
+	 if (i > 0) {
+	 double d = s[i + 1].x - s[i].x;
+
+	 if (d > 0) {
+	 distSum += d;
+	 distCand++;
+	 }
+	 }
+
+	 sumA += s[i].a;
+	 sumW += s[i].weight;
+
+	 if (s[i].weight == 0) {
+	 zeros++;
+	 }
+
+	 if (lbound < 0) {
+	 lbound = s[i].x;
+	 } else {
+	 if (s[i].x < lbound) {
+	 lbound = s[i].x;
+	 }
+	 }
+
+	 if (ubound < 0) {
+	 ubound = s[i].x;
+	 } else {
+	 if (s[i].x > ubound) {
+	 ubound = s[i].x;
+	 }
+	 }
+
+	 __android_log_print(ANDROID_LOG_INFO, "BroovPlayer",
+	 "Pos %d => x: %lf; y: %lf; weight: %lf; a: %lf", i, s[i].x,
+	 s[i].y, s[i].weight, s[i].a);
+	 }
+
+	 range = ubound - lbound;
+	 avA = sumA / n;
+	 avW = sumW / n;
+
+	 if (distCand > 0) {
+	 medDist = distSum / distCand;
+	 }*/
+
+	return slot;
+}
+
+double roundToNPlaces(double value, int to) {
+	double places = pow(10.0, to);
+	return round(value * places) / places;
+}
+
+IplImage* convert_to_float32(IplImage* img) {
+	IplImage* img32f = cvCreateImage(cvGetSize(img), IPL_DEPTH_32F,
+			img->nChannels);
+
+	for (int i = 0; i < img->height; i++) {
+		for (int j = 0; j < img->width; j++) {
+			cvSet2D(img32f, i, j, cvGet2D(img, i, j));
+		}
+	}
+	return img32f;
+}
+
+int av2ipl(AVFrame *src, IplImage *dst) {
+
+	struct SwsContext *swscontext = sws_getContext(src->width, src->height,
+			PIX_FMT_YUV420P, dst->width, dst->height, PIX_FMT_BGR24,
+			SWS_BILINEAR, 0, 0, 0);
+
+	if (swscontext == 0)
+		return (0);
+
+	int linesize[4] = { dst->widthStep, 0, 0, 0 };
+
+	sws_scale(swscontext, src->data, src->linesize, 0, dst->height,
+			(uint8_t **) &(dst->imageData), linesize);
+
+	return 1;
+}
+
+void IplImage_to_AVFrame(IplImage* iplImage, AVFrame* avFrame, int frameWidth,
+		int frameHeight, enum PixelFormat pix_fmt) {
+	struct SwsContext* img_convert_ctx = 0;
+	int linesize[4] = { 0, 0, 0, 0 };
+
+	img_convert_ctx = sws_getContext(iplImage->width, iplImage->height,
+			PIX_FMT_BGR24, frameWidth, frameHeight, pix_fmt, SWS_BILINEAR, 0, 0,
+			0);
+
+	// __android_log_print(ANDROID_LOG_INFO, "BroovPlayer",
+	//		"+++++++++++++++ img_convert_ctx = %d", img_convert_ctx);
+
+	if (img_convert_ctx != 0) {
+		linesize[0] = iplImage->widthStep;
+
+		sws_scale(img_convert_ctx, (uint8_t **) &(iplImage->imageData),
+				linesize, 0, iplImage->height, avFrame->data,
+				avFrame->linesize);
+
+		sws_freeContext(img_convert_ctx);
+	}
+}
+
+void findQuadraticFactors(
+		std::map<int, std::vector<std::vector<double> > > candidates, double &a,
+		double &b, double &c) {
+	double w1 = 0.0;
+	double wx = 0.0, wx2 = 0.0, wx3 = 0.0, wx4 = 0.0;
+	double wy = 0.0, wyx = 0.0, wyx2 = 0.0;
+	double tmpx, tmpy;
+	double den;
+
+	for (std::map<int, std::vector<std::vector<double> > >::iterator iter =
+			candidates.begin(); iter != candidates.end(); iter++) {
+
+		int i = 0;
+		for (i = 0; i < (candidates[(int) iter->first]).size(); i++) {
+
+			double x = candidates[(int) iter->first][i][0];
+			double y = candidates[(int) iter->first][i][1];
+			double w = 1;
+
+			w1 += w;
+			tmpx = w * x;
+			wx += tmpx;
+			tmpx *= x;
+			wx2 += tmpx;
+			tmpx *= x;
+			wx3 += tmpx;
+			tmpx *= x;
+			wx4 += tmpx;
+			tmpy = w * y;
+			wy += tmpy;
+			tmpy *= x;
+			wyx += tmpy;
+			tmpy *= x;
+			wyx2 += tmpy;
+		}
+	}
+
+	den = wx2 * wx2 * wx2 - 2.0 * wx3 * wx2 * wx + wx4 * wx * wx
+			+ wx3 * wx3 * w1 - wx4 * wx2 * w1;
+	if (den == 0.0) {
+		a = 0.0;
+		b = 0.0;
+		c = 0.0;
+	} else {
+		a = (wx * wx * wyx2 - wx2 * w1 * wyx2 - wx2 * wx * wyx + wx3 * w1 * wyx
+				+ wx2 * wx2 * wy - wx3 * wx * wy) / den;
+		b = (-wx2 * wx * wyx2 + wx3 * w1 * wyx2 + wx2 * wx2 * wyx
+				- wx4 * w1 * wyx - wx3 * wx2 * wy + wx4 * wx * wy) / den;
+		c = (wx2 * wx2 * wyx2 - wx3 * wx * wyx2 - wx3 * wx2 * wyx
+				+ wx4 * wx * wyx + wx3 * wx3 * wy - wx4 * wx2 * wy) / den;
+	}
+}
+
 /**
  *
  * @param pts the dts of the pkt / pts of the frame and guessed if not known
@@ -1511,6 +1800,694 @@ static int rgb_queue_picture(VideoState *is, AVFrame *pFrame, double pts,
 
 	// windex is set to 0 initially
 	vp = &is->pictq[is->pictq_windex];
+
+	if (true) {
+
+		frmno++;
+
+		JNIEnv *env;
+
+		jvm->AttachCurrentThread(&env, 0);
+
+		jclass thisClass = (*env).GetObjectClass(parentObj);
+
+		AVCodecContext *pVCodecCtx = pFrame->owner;
+
+		cv::Mat oframe = cv::Mat(pFrame->height, pFrame->width, CV_8UC(3),
+				cv::Scalar(255));
+
+		// Populate the OpenCV Matrix.
+		for (int h = 0; h < pFrame->height; h++) {
+			for (int w = 0; w < pFrame->width; w++) {
+
+				int k = h * pFrame->width + w;
+
+				int i = (h / 2) * (pFrame->width / 2) + (w / 2);
+
+				int Y = pFrame->data[0][k];
+				int U = pFrame->data[1][i];
+				int V = pFrame->data[2][i];
+
+				double R = 1.164 * (Y - 16) + 1.596 * (V - 128);
+
+				double G = 1.164 * (Y - 16) - 0.391 * (U - 128)
+						- 0.813 * (V - 128);
+
+				double B = 1.164 * (Y - 16) + 2.018 * (U - 128);
+
+				if (R < 0.0)
+					R = 0.0;
+
+				if (G < 0.0)
+					G = 0.0;
+
+				if (B < 0.0)
+					B = 0.0;
+				if (R > 255.0)
+					R = 255.0;
+
+				if (G > 255.0)
+					G = 255.0;
+
+				if (B > 255.0)
+					B = 255.0;
+
+				oframe.at<cv::Vec3b>(h, w)[0] = (unsigned int) (B + 0.5);
+
+				oframe.at<cv::Vec3b>(h, w)[1] = ((unsigned int) (G + 0.5));
+
+				oframe.at<cv::Vec3b>(h, w)[2] = ((unsigned int) (R + 0.5));
+
+			}
+		}
+
+		// circle(oframe, cv::Point(100, 100), 100, CV_RGB(0, 255, 0), -1);
+
+		jfieldID calculatingSpeedId = (*env).GetStaticFieldID(thisClass,
+				"calculatingSpeed", "I");
+
+		jint calculatingSpeed = 0;
+
+		double fps = calculate_file_fps(is);
+
+		if (NULL != calculatingSpeedId) {
+			calculatingSpeed = (*env).GetStaticIntField(thisClass,
+					calculatingSpeedId);
+		}
+
+		jfieldID mDebug = (*env).GetFieldID(thisClass, "mDebug", "I");
+
+		jfieldID mWidth = (*env).GetFieldID(thisClass, "mWidth", "I");
+		jfieldID mHeight = (*env).GetFieldID(thisClass, "mHeight", "I");
+
+		jfieldID pitcherStartX = (*env).GetFieldID(thisClass, "pitcherStartX",
+				"I");
+		jfieldID pitcherStartY = (*env).GetFieldID(thisClass, "pitcherStartY",
+				"I");
+		jfieldID pitcherLastX = (*env).GetFieldID(thisClass, "pitcherLastX",
+				"I");
+		jfieldID pitcherLastY = (*env).GetFieldID(thisClass, "pitcherLastY",
+				"I");
+
+		jfieldID catcherStartX = (*env).GetFieldID(thisClass, "catcherStartX",
+				"I");
+		jfieldID catcherStartY = (*env).GetFieldID(thisClass, "catcherStartY",
+				"I");
+		jfieldID catcherLastX = (*env).GetFieldID(thisClass, "catcherLastX",
+				"I");
+		jfieldID catcherLastY = (*env).GetFieldID(thisClass, "catcherLastY",
+				"I");
+
+		jfieldID calculatedSpeedId = (*env).GetStaticFieldID(thisClass,
+				"calculatedSpeed", "D");
+
+		jfieldID pointsId = (*env).GetStaticFieldID(thisClass, "points",
+				"Ljava/lang/String;");
+
+		jfieldID point1X = (*env).GetStaticFieldID(thisClass, "point1X", "I");
+		jfieldID point1Y = (*env).GetStaticFieldID(thisClass, "point1Y", "I");
+		jfieldID point2X = (*env).GetStaticFieldID(thisClass, "point2X", "I");
+		jfieldID point2Y = (*env).GetStaticFieldID(thisClass, "point2Y", "I");
+
+		jfieldID fieldSizeId = (*env).GetFieldID(thisClass, "fieldSize",
+				"I");
+
+		jint psX = 0;
+		jint psY = 0;
+		jint plX = 0;
+		jint plY = 0;
+
+		jint csX = 0;
+		jint csY = 0;
+		jint clX = 0;
+		jint clY = 0;
+
+		jint p1X = 0;
+		jint p1Y = 0;
+		jint p2X = 0;
+		jint p2Y = 0;
+
+		jint width = 0;
+		jint height = 0;
+
+		jdouble calculatedSpeed = 0;
+
+		jint mShowDebug = 0;
+
+		if (NULL != mDebug) {
+			mShowDebug = (*env).GetIntField(parentObj, mDebug);
+		}
+
+		if (NULL != mWidth) {
+			width = (*env).GetIntField(parentObj, mWidth);
+		}
+
+		if (NULL != mHeight) {
+			height = (*env).GetIntField(parentObj, mHeight);
+		}
+
+		if (NULL != pitcherStartX) {
+			psX = (*env).GetIntField(parentObj, pitcherStartX);
+		}
+
+		if (NULL != pitcherStartY) {
+			psY = (*env).GetIntField(parentObj, pitcherStartY);
+		}
+
+		if (NULL != pitcherLastX) {
+			plX = (*env).GetIntField(parentObj, pitcherLastX);
+		}
+
+		if (NULL != pitcherLastY) {
+			plY = (*env).GetIntField(parentObj, pitcherLastY);
+		}
+
+		if (NULL != catcherStartX) {
+			csX = (*env).GetIntField(parentObj, catcherStartX);
+		}
+
+		if (NULL != catcherStartY) {
+			csY = (*env).GetIntField(parentObj, catcherStartY);
+		}
+
+		if (NULL != catcherLastX) {
+			clX = (*env).GetIntField(parentObj, catcherLastX);
+		}
+
+		if (NULL != catcherLastY) {
+			clY = (*env).GetIntField(parentObj, catcherLastY);
+		}
+
+		if (NULL != mWidth && NULL != mHeight) {
+			resize(oframe, oframe, cv::Size(width, height), 0, 0,
+					cv::INTER_LINEAR);
+		}
+
+		// point1 and point2 start
+
+		if (NULL != point1X) {
+			p1X = (*env).GetIntField(parentObj, point1X);
+		}
+
+		if (NULL != point1Y) {
+			p1Y = (*env).GetIntField(parentObj, point1Y);
+		}
+
+		if (NULL != point2X) {
+			p2X = (*env).GetIntField(parentObj, point2X);
+		}
+
+		if (NULL != point2Y) {
+			p2Y = (*env).GetIntField(parentObj, point2Y);
+		}
+
+		// p1 and p2 end
+
+		cv::Point center1(0, 0);
+		cv::Point center2(0, 0);
+
+		double field_dist = 1;
+
+		jfieldID regionStartX = (*env).GetFieldID(thisClass, "regionStartX",
+				"I");
+		jfieldID regionStartY = (*env).GetFieldID(thisClass, "regionStartY",
+				"I");
+		jfieldID regionLastX = (*env).GetFieldID(thisClass, "regionLastX", "I");
+		jfieldID regionLastY = (*env).GetFieldID(thisClass, "regionLastY", "I");
+
+		jint rsX = 0;
+		jint rsY = 0;
+		jint rlX = 0;
+		jint rlY = 0;
+
+		jint fieldSize = 60;
+
+		if (NULL != regionStartX) {
+			rsX = (*env).GetIntField(parentObj, regionStartX);
+		}
+
+		if (NULL != regionStartY) {
+			rsY = (*env).GetIntField(parentObj, regionStartY);
+		}
+
+		if (NULL != regionLastX) {
+			rlX = (*env).GetIntField(parentObj, regionLastX);
+		}
+
+		if (NULL != regionLastY) {
+			rlY = (*env).GetIntField(parentObj, regionLastY);
+		}
+
+		if (NULL != fieldSizeId) {
+			fieldSize = (*env).GetIntField(parentObj, fieldSizeId);
+		}
+
+		rect = cv::Rect(0, 0, 10, 10);
+
+		pitcher = cv::Rect(0, 0, 10, 10);
+
+		catcher = cv::Rect(0, 0, 10, 10);
+
+		if (psX != -1 && psY != -1 && plX != -1 && plY != -1) {
+			pitcher = cv::Rect(psX, psY, plX - psX, plY - psY);
+		}
+
+		if (csX != -1 && csY != -1 && clX != -1 && clY != -1) {
+			catcher = cv::Rect(csX, csY, clX - csX, clY - csY);
+		}
+
+		if (rsX != -1 && rsY != -1 && rlX != -1 && rlY != -1) {
+			rect = cv::Rect(rsX, rsY, rlX - rsX, rlY - rsY);
+		}
+
+		rectangle(oframe, rect, CV_RGB(0, 255, 0), 1, 8, 0);
+		rectangle(oframe, pitcher, CV_RGB(255, 0, 0), 1, 8, 0);
+		rectangle(oframe, catcher, CV_RGB(0, 0, 255), 1, 8, 0);
+
+		// image data structures
+		cv::Mat img1 = oframe.clone();
+		int mode = 3;
+
+		// grayscale buffers
+		cv::Mat imggray1 = cv::Mat::zeros(img1.size(),
+				(mode == 3 ? CV_8UC3 : CV_8UC4));
+		cv::Mat imggray2 = cv::Mat::zeros(img1.size(),
+				(mode == 3 ? CV_8UC3 : CV_8UC4));
+		cv::Mat imggray3 = cv::Mat::zeros(img1.size(),
+				(mode == 3 ? CV_8UC3 : CV_8UC4));
+
+		if (img2.empty()) {
+			oframe.copyTo(img2);
+		} else {
+			resize(img2, img2,
+					cv::Size(round(oframe.cols), round(oframe.rows)));
+		}
+
+		cv::Mat src64f, dst64f, hann;
+		cv::Mat diff;
+		cv::Mat imgdiff;
+
+		int x1t, y1t, x1b, y1b;
+		int x2t, y2t, x2b, y2b;
+
+		// convert rgb to grayscale
+		cv::cvtColor(img1, imggray1, CV_BGR2GRAY);
+
+		// convert rgb to grayscale
+		cv::cvtColor(img2, imggray2, CV_BGR2GRAY);
+
+		createHanningWindow(hann, img1.size(), CV_64F);
+
+		imggray1.convertTo(src64f, CV_64F);
+		imggray2.convertTo(dst64f, CV_64F);
+
+		if (pitcher.x > catcher.x) {
+			GaussianBlur(imggray1, imggray1, cv::Size(3, 3), 0, 0,
+					cv::BORDER_DEFAULT);
+
+			GaussianBlur(imggray2, imggray2, cv::Size(3, 3), 0, 0,
+					cv::BORDER_DEFAULT);
+		} else {
+			GaussianBlur(imggray1, imggray1, cv::Size(9, 9), 0, 0,
+					cv::BORDER_DEFAULT);
+
+			GaussianBlur(imggray2, imggray2, cv::Size(9, 9), 0, 0,
+					cv::BORDER_DEFAULT);
+		}
+
+		// compute difference
+		cv::absdiff(imggray1, imggray2, imggray3);
+
+		// for dilation
+		cv::Mat element = getStructuringElement(cv::MORPH_ELLIPSE,
+				cv::Size(3, 3));
+
+		// compute difference
+		cv::absdiff(imggray1, imggray2, imggray3);
+
+		threshold(imggray3, imggray3, 100, 255, 0);
+
+		dilate(imggray3, imggray3, element);
+
+		cv::Point pcenter = cv::Point(pitcher.x + (pitcher.width / 2),
+				pitcher.y + pitcher.height);
+		cv::Point ccenter = cv::Point(catcher.x + (catcher.width / 2),
+				catcher.y + catcher.height);
+
+		double baseRadius = euclideanDist(pcenter, ccenter);
+
+		double horiY = oframe.rows * 0.4;
+		cv::Point pA, pB, pC, pD, pE, pF, pG, pH, pI, pJ, pK, pL, pM, pN, pP,
+				pQ;
+
+		if (mShowDebug > 0) {
+			// Horizon
+			line(oframe, cv::Point(0, oframe.rows * 0.4),
+					cv::Point(oframe.cols, oframe.rows * 0.4),
+					cv::Scalar(0, 0, 192), 1);
+
+			// Baseline
+			line(oframe, cv::Point(0, pcenter.y),
+					cv::Point(oframe.cols, pcenter.y), cv::Scalar(255, 0, 0),
+					1);
+		}
+
+		double adjacent = ccenter.x - pcenter.x;
+		double opposite = pcenter.y - ccenter.y;
+		double theta = atan(opposite / adjacent) * 180 / 3.141592653589793;
+		float mBase;
+
+		center1.x = pitcher.x + (pitcher.width / 2);
+		center1.y = pitcher.y + (pitcher.height / 9);
+
+		center2.x = catcher.x + (catcher.width / 2);
+		center2.y = catcher.y + (catcher.height / 2);
+
+		__android_log_print(ANDROID_LOG_INFO, "BroovPlayer",
+				"%%%%%%%%%%%%%%%% pcenter.x: %d; ccenter.x: %d;", pcenter.x,
+				ccenter.x);
+
+		if (ccenter.x > 0 && pcenter.x > 0 && abs(ccenter.x - pcenter.x) > 0) {
+
+			__android_log_print(ANDROID_LOG_INFO, "BroovPlayer",
+					"%%%%%%%%%%%%%%%% pitcher.x: %d; catcher.x: %d;", pitcher.x,
+					catcher.x);
+
+			if (pcenter.x > ccenter.x) {
+
+				__android_log_print(ANDROID_LOG_INFO, "BroovPlayer",
+						"%%%%%%%%%%%%%%%% center1.x > center2.x");
+
+				double adjacent = pcenter.x - ccenter.x;
+				double opposite = pcenter.y - ccenter.y;
+				double theta = atan(opposite / adjacent) * 180
+						/ 3.141592653589793;
+
+				mBase = (float) (pcenter.y - ccenter.y)
+						/ (float) (pcenter.x - ccenter.x);
+
+				pB.y = horiY;
+
+				pB.x = (mBase * ccenter.x + pB.y - ccenter.y) / mBase;
+
+				pC.x = ccenter.x;
+				pC.y = horiY;
+
+				float mPP = (float) (ccenter.y - pC.y)
+						/ (float) (ccenter.x - pC.x);
+				float pp = abs(ccenter.y - pC.y);
+
+				pA.y = horiY;
+				pA.x = pC.x - (pp * tan(theta * 3.141592653589793 / 180));
+
+				double bp = euclideanDist(pcenter, pB);
+
+				// Bottom line
+				line(oframe, pcenter, pB, cv::Scalar(255, 0, 255), 1);
+
+				// Top line
+				// line(frame, Point(pcenter.x, pitcher.y), pB, cv::Scalar(255, 255, 0), 1);
+
+				// Vertical
+				line(oframe, cv::Point(pcenter.x, rect.y), pcenter,
+						cv::Scalar(255, 0, 255));
+
+				line(oframe, center1, pcenter, cv::Scalar(255, 0, 255));
+
+				line(oframe, pcenter, pA, cv::Scalar(255, 0, 255), 1);
+
+				circle(oframe, pB, bp, CV_RGB(0, 255, 0), 1);
+
+				pH.y = horiY;
+				pH.x = pB.x - bp;
+
+			} else {
+				mBase = (float) (ccenter.y - pcenter.y)
+						/ (float) (ccenter.x - pcenter.x);
+
+				pB.y = horiY;
+
+				pB.x = (mBase * pcenter.x + pB.y - pcenter.y) / mBase;
+
+				pC.x = pcenter.x;
+				pC.y = horiY;
+
+				float mPP = (float) (pcenter.y - pC.y)
+						/ (float) (pcenter.x - pC.x);
+				float pp = abs(pcenter.y - pC.y);
+
+				pA.y = horiY;
+				pA.x = pC.x - (pp * tan(theta * 3.141592653589793 / 180));
+
+				double bp = euclideanDist(pcenter, pB);
+
+				// Bottom line
+				line(oframe, pcenter, pB, cv::Scalar(255, 0, 255), 1);
+
+				// Top line
+				// line(frame, Point(pcenter.x, pitcher.y), pB, cv::Scalar(255, 255, 0), 1);
+
+				// Vertical
+				line(oframe, cv::Point(pcenter.x, rect.y), pcenter,
+						cv::Scalar(255, 0, 255));
+
+				line(oframe, pcenter, pA, cv::Scalar(255, 0, 255), 1);
+
+				circle(oframe, pB, bp, CV_RGB(0, 255, 0), 1);
+
+				pH.y = horiY;
+				pH.x = pB.x - bp;
+
+			}
+
+		}
+
+		circle(oframe, pcenter, 4, CV_RGB(0, 0, 255), -1);
+		circle(oframe, ccenter, 4, CV_RGB(0, 0, 255), -1);
+
+		circle(oframe, center1, 4, CV_RGB(255, 0, 255), -1);
+		circle(oframe, center2, 4, CV_RGB(255, 0, 255), -1);
+
+		rectangle(imggray3, rect, CV_RGB(255, 255, 255), 1, 8, 0);
+
+		std::vector<std::vector<cv::Point> > contours;
+		std::vector<cv::Vec4i> hierarchy;
+
+		cv::Mat roiImg(imggray3, rect);
+
+		findContours(roiImg.clone(), contours, hierarchy, CV_RETR_CCOMP,
+				CV_CHAIN_APPROX_SIMPLE);
+
+		/// Get the moments
+		std::vector<cv::Moments> mu(contours.size());
+		for (int i = 0; i < contours.size(); i++) {
+			mu[i] = moments(contours[i], false);
+		}
+
+		///  Get the mass centers:
+		std::vector<cv::Point2f> mc(contours.size());
+		for (int i = 0; i < contours.size(); i++) {
+			mc[i] = cv::Point2f(mu[i].m10 / mu[i].m00, mu[i].m01 / mu[i].m00);
+		}
+
+		double aP = 0.0002, bP = 1.0, cP = 0.0;
+
+		if (center1.x > 10 && center2.x > 10) {
+
+			double d = (center2.x - center1.x) / (double) oframe.cols;
+
+			double xA = center1.x, yA = center1.y, xB = center2.x, yB =
+					center2.y;
+
+			if (xA > xB) {
+
+				d = (center1.x - center2.x) / (double) oframe.cols;
+
+				aP = 0.0002 / d;
+
+				bP = (yA - (aP * xA * xA) + (aP * xB * xB) - yB) / (xA - xB);
+
+				cP = yB - (aP * xB * xB) - (bP * xB);
+
+				double s = (xA - xB) / 10.0;
+
+				for (double x = xB; x < xA; x += s) {
+
+					double y = (aP * x * x) + (bP * x) + cP;
+					double y2 = (aP * (x + s) * (x + s)) + (bP * (x + s)) + cP;
+
+					line(oframe, cv::Point(x, y), cv::Point(x + s, y2),
+							cv::Scalar(255, 255, 255), 1, 8);
+				}
+
+			} else {
+
+				aP = 0.0002 / d;
+
+				bP = (yA - (aP * xA * xA) + (aP * xB * xB) - yB) / (xA - xB);
+
+				cP = yB - (aP * xB * xB) - (bP * xB);
+
+				double s = (xB - xA) / 10.0;
+
+				for (double x = xA; x < xB; x += s) {
+
+					double y = (aP * x * x) + (bP * x) + cP;
+					double y2 = (aP * (x + s) * (x + s)) + (bP * (x + s)) + cP;
+
+					line(oframe, cv::Point(x, y), cv::Point(x + s, y2),
+							cv::Scalar(255, 255, 255), 1, 8);
+				}
+			}
+		}
+
+		int x1, y1, x2, y2;
+
+		x1 = center1.x;
+
+		y1 = center1.y;
+
+		// center2 transformed
+		float mC2B = (float) (pB.y - center2.y) / (float) (pB.x - center2.x);
+
+		y2 = (int) ((mC2B * center1.x) - (mC2B * pB.x) + pB.y);
+
+		float mIC2B = (float) (ccenter.y - pH.y) / (float) (ccenter.x - pH.x);
+
+		x2 = (int) ((float) (pcenter.y + (mIC2B * pH.x - pH.y)) / mIC2B);
+
+		std::map<int, std::vector<std::vector<double> > > store;
+
+		int i = 0;
+		for (i = 0; i < contours.size(); ++i) {
+
+			cv::Scalar color(128, 128, 255);
+
+			double yC = (aP * (mc[i].x + rect.x) * (mc[i].x + rect.x))
+					+ (bP * (mc[i].x + rect.x)) + cP;
+
+			double diff = abs(yC - mc[i].y);
+
+			if (diff < 50) {
+
+				if (mShowDebug > 0) {
+					line(oframe, cv::Point(mc[i].x, mc[i].y) + rect.tl(),
+							cv::Point(mc[i].x + rect.x, yC),
+							cv::Scalar(255, 255, 255), 1, 8);
+				}
+
+				int x3 = mc[i].x, y3 = mc[i].y;
+
+				mC2B = (float) (pB.y - mc[i].y - rect.y)
+						/ (float) (pB.x - mc[i].x - rect.x);
+
+				y3 = (int) ((mC2B * center1.x) - (mC2B * pB.x) + pB.y);
+
+				int yi = (int) ((mBase * (mc[i].x + rect.x)) - (mBase * pB.x)
+						+ pB.y);
+
+				mIC2B = (float) (pH.y - yi) / (float) (pH.x - mc[i].x - rect.x);
+
+				x3 =
+						(int) ((float) (pcenter.y + (mIC2B * pH.x - pH.y))
+								/ mIC2B);
+
+				double diff = abs(yC - mc[i].y);
+
+				std::vector<double> e;
+
+				e.push_back(mc[i].x);
+				e.push_back(mc[i].y);
+				e.push_back(diff);
+				e.push_back(frmno);
+				e.push_back(x3);
+				e.push_back(y3);
+
+				store[frmno].push_back(e);
+
+			}
+
+			drawContours(oframe, contours, i, cv::Scalar(255, 0, 255), 1, CV_AA,
+					hierarchy, 1, rect.tl());
+
+		}
+
+		if (calculatingSpeed > 0 && store[frmno].size() == 2) {
+
+			if ((store[frmno][0][2]) - (store[frmno][1][2]) < 10) {
+				circle(oframe,
+						cv::Point(store[frmno][0][0], store[frmno][0][1])
+								+ rect.tl(), 10, CV_RGB(0, 255, 0), 2);
+
+				circle(oframe,
+						cv::Point(store[frmno][1][0], store[frmno][1][1])
+								+ rect.tl(), 10, CV_RGB(0, 255, 0), 2);
+
+				if (NULL != point1X) {
+					(*env).SetStaticIntField(thisClass, point1X,
+							(int) store[frmno][0][0]);
+				}
+
+				if (NULL != point1Y) {
+					(*env).SetStaticIntField(thisClass, point1Y,
+							(int) store[frmno][0][1]);
+				}
+
+				if (NULL != point2X) {
+					(*env).SetStaticIntField(thisClass, point2X,
+							(int) store[frmno][1][0]);
+				}
+
+				if (NULL != point2Y) {
+					(*env).SetStaticIntField(thisClass, point2Y,
+							(int) store[frmno][1][1]);
+				}
+
+				double medDist = euclideanDist(
+						cv::Point(store[frmno][0][4], store[frmno][0][5]),
+						cv::Point(store[frmno][1][4], store[frmno][1][5]));
+
+				double fd = 2;
+
+				double fps = calculate_file_fps(is);
+
+				double field_dist = abs(x2 - x1);
+
+				double compensation_factor = 3.533333333; //4;
+
+				/*18.4404*/
+				double speed = abs(
+						round(
+								(medDist * (double) fieldSize * 0.3048 * fps
+										* compensation_factor)
+										/ (field_dist * fd)));
+
+				__android_log_print(ANDROID_LOG_INFO, "BroovPlayer",
+						"%%%%%%%%%%%%%%%% speed: %lf; fieldSize: %d", speed,
+						fieldSize);
+
+				if (NULL != calculatedSpeedId) {
+					(*env).SetStaticDoubleField(thisClass, calculatedSpeedId,
+							speed);
+				}
+			}
+
+		}
+
+		img1.copyTo(img2);
+
+		if (mShowDebug > 0) {
+
+			IplImage rframe = oframe;
+
+			IplImage_to_AVFrame(&rframe, pFrame, pFrame->width, pFrame->height,
+					pVCodecCtx->pix_fmt);
+
+		}
+
+		jvm->DetachCurrentThread();
+
+	}
 
 	if (g_source_width_height) {
 		if (vp->dst_width != g_aspect_ratio_w
@@ -1642,714 +2619,6 @@ static int rgb_queue_picture(VideoState *is, AVFrame *pFrame, double pts,
 
 				}
 
-				// ------------------------- Image processing stuff -------------------
-
-				__android_log_print(ANDROID_LOG_INFO, "BroovPlayer", "BEFORE");
-
-				// cv::BackgroundSubtractorMOG2 mog;
-
-				int mode = 4;
-
-				/*cv::Mat frame(vp->dst_height, vp->dst_width,
-				 (mode == 3 ? CV_8UC3 : CV_8UC4),
-				 cv::Scalar(255));*/
-
-				cv::Mat foreground, image, gray;
-				IplImage *iframe;
-
-				iframe = cvCreateImage(cvSize(vp->dst_width, vp->dst_height),
-						IPL_DEPTH_8U, 3);
-
-				av2ipl(pFrame, iframe);
-
-				cv::Mat frame(iframe);
-
-				// mat = (cv::Mat*) addrDescriptor;
-
-				JNIEnv *env;
-
-				jvm->AttachCurrentThread(&env, 0);
-
-				jclass thisClass = (*env).GetObjectClass(parentObj);
-
-				// mat = (cv::Mat*) addrDescriptor;
-
-				if (true) {
-
-					cv::Mat src;
-
-					frame.copyTo(src);
-
-					// image data structures
-					cv::Mat img1 = frame.clone();
-
-					jfieldID calculatingSpeedId = (*env).GetStaticFieldID(
-							thisClass, "calculatingSpeed", "I");
-
-					jint calculatingSpeed = 0;
-
-					if (NULL != calculatingSpeedId) {
-						calculatingSpeed = (*env).GetStaticIntField(thisClass,
-								calculatingSpeedId);
-					}
-
-					if (calculatingSpeed > 0) {
-
-						__android_log_print(ANDROID_LOG_INFO, "BroovPlayer",
-								"$$$$$$$$$$$$$$$$ - CALCULATING SPEED - $$$$$$$$$$$$$$$$$$$");
-
-						// grayscale buffers
-						cv::Mat imggray1 = cv::Mat::zeros(gray.size(),
-								(mode == 3 ? CV_8UC3 : CV_8UC4));
-						cv::Mat imggray2 = cv::Mat::zeros(gray.size(),
-								(mode == 3 ? CV_8UC3 : CV_8UC4));
-						cv::Mat imggray3 = cv::Mat::zeros(gray.size(),
-								(mode == 3 ? CV_8UC3 : CV_8UC4));
-
-						if (initialized == false) {
-							frame.copyTo(img2);
-							initialized = true;
-						}
-
-						cv::Mat src64f, dst64f, hann;
-						cv::Mat diff;
-						cv::Mat imgdiff;
-
-						int x1t, y1t, x1b, y1b;
-						int x2t, y2t, x2b, y2b;
-
-						// convert rgb to grayscale
-						cv::cvtColor(img1, imggray1, CV_BGR2GRAY);
-
-						// convert rgb to grayscale
-						cv::cvtColor(img2, imggray2, CV_BGR2GRAY);
-
-						createHanningWindow(hann, src.size(), CV_64F);
-
-						imggray1.convertTo(src64f, CV_64F);
-						imggray2.convertTo(dst64f, CV_64F);
-
-						cv::Point2d offset = phaseCorrelate(src64f, dst64f,
-								hann);
-
-						offset.x = round(offset.x);
-						offset.y = round(offset.y);
-
-						if (offset.x < 0) {
-							x2t = abs(offset.x);
-							x2b = img2.size().width + offset.x;
-						} else {
-							x2t = 0;
-							x2b = img2.size().width - offset.x;
-						}
-
-						x1t = 0;
-						x1b = src.size().width - abs(offset.x);
-
-						if (offset.y < 0) {
-							y2t = abs(offset.y);
-							y2b = img2.size().height + offset.y;
-						} else {
-							y2t = 0;
-							y2b = img2.size().height - offset.y;
-						}
-
-						y1t = 0;
-						y1b = src.size().height - abs(offset.y);
-
-						// Setup a rectangle to define your region of interest
-						cv::Rect myROId(x1t, y1t, x1b, y1b);
-						cv::Rect myROIs(x2t, y2t, x2b, y2b);
-
-						imggray1 = imggray1(myROIs);
-						imggray2 = imggray2(myROId);
-
-						/*cv::GaussianBlur(imggray2, imggray2, cv::Size(3, 3), 0, 0,
-						 cv::BORDER_DEFAULT);
-
-						 cv::GaussianBlur(imggray1, imggray1, cv::Size(3, 3), 0, 0,
-						 cv::BORDER_DEFAULT);*/
-
-						// compute difference
-						cv::absdiff(imggray1, imggray2, imggray3);
-
-						// threshold(imggray3, imggray3, 100, 255, 0);
-
-						threshold(imggray3, imggray3, 128, cv::THRESH_BINARY,
-								3);
-
-						std::vector<std::vector<cv::Point> > contours;
-						findContours(imggray3.clone(), contours,
-								CV_RETR_EXTERNAL, CV_CHAIN_APPROX_SIMPLE);
-
-						/// Get the moments
-						std::vector<cv::Moments> mu(contours.size());
-						for (int i = 0; i < contours.size(); i++) {
-							mu[i] = moments(contours[i], false);
-						}
-
-						///  Get the mass centers:
-						std::vector<cv::Point2f> mc(contours.size());
-						for (int i = 0; i < contours.size(); i++) {
-							mc[i] = cv::Point2f(mu[i].m10 / mu[i].m00,
-									mu[i].m01 / mu[i].m00);
-						}
-
-						cv::Rect region(
-								cv::Point(frame.cols / 6, frame.rows / 18),
-								cv::Point(frame.cols - (frame.cols / 6),
-										frame.rows / 1.5));
-
-						cv::Rect region2(
-								cv::Point(frame.cols / 4.3, frame.rows / 6),
-								cv::Point(frame.cols - (frame.cols / 4.3),
-										frame.rows / 1.5));
-
-						/*cv::Mat drawing = cv::Mat::zeros(gray.size(),
-						 (mode == 3 ? CV_8UC3 : CV_8UC4));*/
-
-						double radius = src.cols / 56;
-						double radius2 = src.cols / 12;
-
-						points[0].clear();
-
-						/// Draw contours
-						cv::Mat drawing = cv::Mat::zeros(src.rows, src.cols,
-								CV_8UC3);
-
-						// jclass thisClass = (*env).GetObjectClass(parentObj);
-
-						jfieldID mDebug = (*env).GetFieldID(thisClass, "mDebug",
-								"I");
-
-						jfieldID pitcherStartX = (*env).GetFieldID(thisClass,
-								"pitcherStartX", "I");
-						jfieldID pitcherStartY = (*env).GetFieldID(thisClass,
-								"pitcherStartY", "I");
-						jfieldID pitcherLastX = (*env).GetFieldID(thisClass,
-								"pitcherLastX", "I");
-						jfieldID pitcherLastY = (*env).GetFieldID(thisClass,
-								"pitcherLastY", "I");
-
-						jfieldID catcherStartX = (*env).GetFieldID(thisClass,
-								"catcherStartX", "I");
-						jfieldID catcherStartY = (*env).GetFieldID(thisClass,
-								"catcherStartY", "I");
-						jfieldID catcherLastX = (*env).GetFieldID(thisClass,
-								"catcherLastX", "I");
-						jfieldID catcherLastY = (*env).GetFieldID(thisClass,
-								"catcherLastY", "I");
-
-						jfieldID calculatedSpeedId = (*env).GetStaticFieldID(
-								thisClass, "calculatedSpeed", "D");
-
-						jint psX = 0;
-						jint psY = 0;
-						jint plX = 0;
-						jint plY = 0;
-
-						jint csX = 0;
-						jint csY = 0;
-						jint clX = 0;
-						jint clY = 0;
-
-						jdouble calculatedSpeed = 0;
-
-						jint mShowDebug = 1;
-
-						double fps = calculate_file_fps(is);
-
-						if (NULL != mDebug) {
-							mShowDebug = (*env).GetIntField(parentObj, mDebug);
-						}
-
-						if (NULL != pitcherStartX) {
-							psX = (*env).GetIntField(parentObj, pitcherStartX);
-						}
-
-						if (NULL != pitcherStartY) {
-							psY = (*env).GetIntField(parentObj, pitcherStartY);
-						}
-
-						if (NULL != pitcherLastX) {
-							plX = (*env).GetIntField(parentObj, pitcherLastX);
-						}
-
-						if (NULL != pitcherLastY) {
-							plY = (*env).GetIntField(parentObj, pitcherLastY);
-						}
-
-						if (NULL != catcherStartX) {
-							csX = (*env).GetIntField(parentObj, catcherStartX);
-						}
-
-						if (NULL != catcherStartY) {
-							csY = (*env).GetIntField(parentObj, catcherStartY);
-						}
-
-						if (NULL != catcherLastX) {
-							clX = (*env).GetIntField(parentObj, catcherLastX);
-						}
-
-						if (NULL != catcherLastY) {
-							clY = (*env).GetIntField(parentObj, catcherLastY);
-						}
-
-						cv::Point center1(0, 0);
-						cv::Point center2(0, 0);
-
-						double field_dist = 1;
-
-						if (psX != -1 && psY != -1 && plX != -1 && plY != -1) {
-							cv::Rect region(cv::Point(psX, psY),
-									cv::Point(plX, plY));
-
-							// rectangle(src, region, cv::Scalar(255, 0, 0), 1);
-						}
-
-						if (csX != -1 && csY != -1 && clX != -1 && clY != -1) {
-							cv::Rect region(cv::Point(csX, csY),
-									cv::Point(clX, clY));
-
-							// rectangle(src, region, cv::Scalar(0, 0, 255), 1);
-						}
-
-						if (psX != -1 && psY != -1 && plX != -1 && plY != -1
-								&& csX != -1 && csY != -1 && clX != -1
-								&& clY != -1) {
-
-							cv::Point point1a(psX, psY);
-							cv::Point point1b(plX, plY);
-
-							cv::Point point2a(csX, csY);
-							cv::Point point2b(clX, clY);
-
-							center1 = rectCenter(point1a, point1b);
-
-							center2 = rectCenter(point2a, point2b);
-
-							if (mShowDebug == 1) {
-								line(src, center1, center2,
-										cv::Scalar(0, 255, 255), 1);
-							}
-
-							if (mShowDebug == 1) {
-								circle(src, center1, 4, cv::Scalar(0, 255, 255),
-										-1, 8, 0);
-							}
-
-							/*double radius3 = src.cols / 2.5;
-
-							 cv::Rect rect = cv::Rect(
-							 (center1 - cv::Point(radius3, radius3)),
-							 (center1 + cv::Point(radius3, 0)));
-
-							 rectangle(src, rect, cv::Scalar(255, 255, 255), 1);*/
-
-							if (mShowDebug == 1) {
-								circle(src, center2, 4, cv::Scalar(0, 255, 255),
-										-1, 8, 0);
-							}
-
-							field_dist = euclideanDist(center1, center2);
-
-							// y = a(x - xi1)(x - xi2)
-							// a = y / ((x - xi1)(x - xi2))
-
-							cv::Point centerMid = rectCenter(center1, center2);
-
-							centerMid = centerMid - cv::Point(0, 10);
-
-							std::stringstream buffer;
-							buffer << field_dist << " ~ 60.5ft";
-
-							if (mShowDebug == 1) {
-								putText(src, buffer.str().c_str(), centerMid,
-										cv::FONT_HERSHEY_COMPLEX_SMALL, 1,
-										cv::Scalar(255, 255, 0), 1, CV_AA);
-							}
-
-						} else {
-							firstPointFound = false;
-							secondPointFound = false;
-						}
-
-						int frn = pFrame->coded_picture_number;
-
-						if (firstPointFound) {
-
-							/*std::stringstream buffer;
-							 buffer << "a: " << foundPoints[0][2] << "; f: "
-							 << foundPoints[0][3];
-
-							 putText(src, buffer.str().c_str(),
-							 cv::Point(foundPoints[0][0], foundPoints[0][1]),
-							 cv::FONT_HERSHEY_COMPLEX_SMALL, 1,
-							 cv::Scalar(255, 255, 255), 1, CV_AA);*/
-
-							if (mShowDebug == 1) {
-								circle(src,
-										cv::Point(foundPoints[0][0],
-												foundPoints[0][1]), 5,
-										cv::Scalar(255, 0, 0), 2, 8, 0);
-							}
-						}
-
-						if (secondPointFound) {
-
-							/*std::stringstream buffer;
-							 buffer << "a: " << foundPoints[1][2] << "; f: "
-							 << foundPoints[1][3];
-
-							 putText(src, buffer.str().c_str(),
-							 cv::Point(foundPoints[1][0], foundPoints[1][1]),
-							 cv::FONT_HERSHEY_COMPLEX_SMALL, 1,
-							 cv::Scalar(255, 255, 255), 1, CV_AA);*/
-
-							if (mShowDebug == 1) {
-								circle(src,
-										cv::Point(foundPoints[1][0],
-												foundPoints[1][1]), 5,
-										cv::Scalar(255, 255, 0), 2, 8, 0);
-							}
-
-							cv::Point first = cv::Point(foundPoints[0][0],
-									foundPoints[0][1]);
-							cv::Point second = cv::Point(foundPoints[1][0],
-									foundPoints[1][1]);
-
-							double dist = euclideanDist(first, second);
-
-							cv::Point centerMid = rectCenter(first, second);
-
-							centerMid = centerMid - cv::Point(0, 30);
-
-							if (mShowDebug == 1) {
-								line(src, first, second,
-										cv::Scalar(255, 0, 255), 2);
-							}
-
-							double fd = (foundPoints[1][3] - foundPoints[0][3])
-									+ 1;
-
-							if (fd < 2) {
-								fd = 2;
-							}
-
-							double compensation_factor = 0.359192652;
-
-							double speed = round(
-									(dist * 18.4404 * fps * 2.2369362920544)
-											/ (field_dist * fd));
-
-							if (mShowDebug == 1) {
-								std::stringstream buffer2;
-								/*buffer2 << "d: " << dist << "; fd: "
-								 << (foundPoints[1][3] - foundPoints[0][3]);*/
-								buffer2 << "Speed: " << speed << "MPH (" << fd
-										<< ")";
-
-								putText(src, buffer2.str().c_str(), centerMid,
-										cv::FONT_HERSHEY_COMPLEX_SMALL, 1,
-										cv::Scalar(255, 0, 255), 1, CV_AA);
-							}
-
-							if (NULL != calculatedSpeedId) {
-								(*env).SetStaticDoubleField(thisClass,
-										calculatedSpeedId, speed);
-							}
-
-						}
-
-						// Variable radius
-						double radius3 = src.cols / 3.5;
-
-						for (int i = 0; i < contours.size(); i++) {
-
-							cv::Rect rect = cv::Rect(
-									(center1 - cv::Point(radius3, radius3)),
-									(center1 + cv::Point(radius3, 0)));
-
-							if (mShowDebug == 1) {
-								rectangle(src, rect, cv::Scalar(255, 255, 255),
-										1);
-							}
-
-							// Only inside interest area and within given size
-							if (mc[i].inside(region)) {
-
-								bool found = pointIn(mc[i], radius);
-
-								if (!found) {
-									cv::Scalar color(rand() & 255, rand() & 255,
-											rand() & 255);
-
-									if (mShowDebug == 1) {
-										if (showHistory)
-											rectangle(src,
-													cv::Point(mc[i].x - radius,
-															mc[i].y - radius),
-													cv::Point(mc[i].x + radius,
-															mc[i].y + radius),
-													color);
-									}
-
-									// if (mShowDebug == 1) {
-									if (psX != -1 && psY != -1 && plX != -1
-											&& plY != -1 && csX != -1
-											&& csY != -1 && clX != -1
-											&& clY != -1) {
-
-										cv::Point point1a(psX, psY);
-										cv::Point point1b(plX, plY);
-
-										cv::Point point2a(csX, csY);
-										cv::Point point2b(clX, clY);
-
-										cv::Point center1 = rectCenter(point1a,
-												point1b);
-
-										cv::Point center2 = rectCenter(point2a,
-												point2b);
-
-										int part = (int) floor(
-												(double) abs(
-														(center1.x - center2.x)
-																/ 30));
-
-										cv::Point centerMid = rectCenter(
-												center1, center2);
-
-										// y = a(x - xi1)(x - xi2)
-										// a = y / ((x - xi1)(x - xi2))
-
-										cv::Point currentPoint = grid2coord(
-												mc[i], centerMid, part);
-
-										cv::Point newCenter1 = grid2coord(
-												center1, centerMid, part);
-
-										cv::Point newCenter2 = grid2coord(
-												center2, centerMid, part);
-
-										double a =
-												(double) currentPoint.y
-														/ (double) ((currentPoint.x
-																- newCenter1.x)
-																* (currentPoint.x
-																		- newCenter2.x));
-
-										if (a < 0.015 || a > 0.026)
-											continue;
-
-										cv::Rect rect =
-												cv::Rect(
-														(center1
-																- cv::Point(
-																		radius3,
-																		radius3)),
-														(center1
-																+ cv::Point(
-																		radius3,
-																		0)));
-										cv::Rect innerRect = cv::Rect(
-												cv::Point(psX, psY),
-												cv::Point(plX, plY));
-
-										if (!firstPointFound) {
-											if (mc[i].inside(rect)
-													&& !mc[i].inside(
-															innerRect)) {
-												foundPoints[0][0] = mc[i].x;
-												foundPoints[0][1] = mc[i].y;
-												foundPoints[0][2] = a;
-												foundPoints[0][3] = frn;
-
-												firstPointFound = true;
-
-											} else {
-												continue;
-											}
-										} else if (!secondPointFound) {
-											cv::Point firstPt = cv::Point(
-													foundPoints[0][0],
-													foundPoints[0][1]);
-
-											double d1 = euclideanDist(firstPt,
-													center1);
-											double d2 = euclideanDist(mc[i],
-													center1);
-
-											double dt = euclideanDist(firstPt,
-													mc[i]);
-
-											double factor = 1.3;
-
-											// Distance within given reasonable range
-											if (dt < 50 || dt > 110) {
-												firstPointFound = false;
-												radius3 = radius3 * factor;
-
-												if (mc[i].inside(rect)
-														&& !mc[i].inside(
-																innerRect)) {
-													foundPoints[0][0] = mc[i].x;
-													foundPoints[0][1] = mc[i].y;
-													foundPoints[0][2] = a;
-													foundPoints[0][3] = frn;
-
-													firstPointFound = true;
-												}
-												continue;
-											}
-
-											// second closer to start
-											if (d1 > d2)
-												continue;
-
-											if (frn - foundPoints[0][3] > 10) {
-												firstPointFound = false;
-												radius3 = radius3 * factor;
-
-												if (mc[i].inside(rect)
-														&& !mc[i].inside(
-																innerRect)) {
-													foundPoints[0][0] = mc[i].x;
-													foundPoints[0][1] = mc[i].y;
-													foundPoints[0][2] = a;
-													foundPoints[0][3] = frn;
-
-													firstPointFound = true;
-												}
-												continue;
-											}
-
-											// if (!mc[i].inside(innerRect)) {
-
-											foundPoints[1][0] = mc[i].x;
-											foundPoints[1][1] = mc[i].y;
-											foundPoints[1][2] = a;
-											foundPoints[1][3] = frn;
-
-											secondPointFound = true;
-
-											// }
-										}
-
-										if (mShowDebug == 1) {
-											std::stringstream buffer;
-											buffer << "a: " << a;
-
-											cv::putText(src,
-													buffer.str().c_str(), mc[i],
-													cv::FONT_HERSHEY_COMPLEX_SMALL,
-													1,
-													cv::Scalar(255, 255, 255),
-													1, CV_AA);
-										}
-
-										double pitchSize = round(
-												euclideanDist(center1,
-														center2));
-
-										int s = 0;
-
-										for (s = 0; s < pitchSize; s += part) {
-											int intX = center1.x + s;
-
-											cv::Point newIntPoint = grid2coord(
-													cv::Point(intX, 0),
-													centerMid, part);
-
-											double oldY = a
-													* (newIntPoint.x
-															- newCenter1.x)
-													* (newIntPoint.x
-															- newCenter2.x);
-
-											cv::Point oldPt = coord2grid(
-													cv::Point(newIntPoint.x,
-															oldY), centerMid,
-													part);
-
-											if (mShowDebug == 1) {
-												circle(src,
-														cv::Point(oldPt.x,
-																oldPt.y), 2,
-														color, -1, 8, 0);
-											}
-										}
-									}
-
-									//}
-
-									if (mShowDebug == 1) {
-										circle(drawing, mc[i], 2, color, -1, 8,
-												0);
-
-										circle(src, mc[i], radius / 2,
-												CV_RGB(0, 255, 0), 2, 8, 0);
-									}
-
-									if (mShowDebug == 1) {
-										CvFont *font = new CvFont;
-										cvInitFont(font, CV_FONT_HERSHEY_DUPLEX,
-												0.5, 0.5, 0, 1);
-
-										std::stringstream buffer;
-										buffer
-												<< round(
-														arcLength(contours[i],
-																true));
-
-										if (showHistory)
-											putText(src, buffer.str().c_str(),
-													mc[i],
-													cv::FONT_HERSHEY_COMPLEX_SMALL,
-													0.8, cv::Scalar::all(255),
-													1, CV_AA);
-									}
-
-									points[0].push_back(mc[i]);
-								}
-							}
-						}
-
-						int j;
-						for (j = history - 1; j > 0; j--) {
-							if (!points[j - 1].empty())
-								points[j] = points[j - 1];
-						}
-
-						/*std::stringstream buffer;
-						 buffer << round(fps) << "fps: " << frn;
-
-						 putText(src, buffer.str().c_str(), cv::Point(10, 30),
-						 cv::FONT_HERSHEY_COMPLEX_SMALL, 0.9,
-						 cv::Scalar(0, 0, 255), 1, CV_AA);*/
-
-					}
-
-					// src.copyTo(*mat);
-
-					// imggray3.copyTo(*mat);
-
-					img2 = frame.clone();
-
-					jvm->DetachCurrentThread();
-
-				} else {
-
-					frame.copyTo(*mat);
-
-				}
-
-				cvReleaseImage(&iframe);
-
-				__android_log_print(ANDROID_LOG_INFO, "BroovPlayer", "AFTER");
-
-				// ----------------------- End Image processing stuff -----------------
-
 			} // g_video_yuv_rgb_asm is true
 #endif
 		}
@@ -2416,7 +2685,14 @@ bool pointIn(cv::Point2f point, double radius) {
 
 void player_mat(long addrDescriptor, JNIEnv *env, jobject obj) {
 
-	// mat = (cv::Mat*) addrDescriptor;
+	struct_pos = 0;
+
+	frmno = 0;
+
+	// candidates.clear();
+	// store.clear();
+
+	mat = (cv::Mat*) addrDescriptor;
 
 	// gAddrDescriptor = env->NewGlobalRef((jobject) addrDescriptor);
 
@@ -2427,6 +2703,14 @@ void player_mat(long addrDescriptor, JNIEnv *env, jobject obj) {
 }
 
 void player_point_reset() {
+
+	struct_pos = 0;
+
+	frmno = 0;
+
+	// candidates.clear();
+	// store.clear();
+
 	points[0].clear();
 	points[1].clear();
 }
@@ -3822,7 +4106,7 @@ static int decode_thread(void *arg) {
 
 		if (is->paused) {
 			usleep(10000); //Sleep for 10ms
-			//SDL_Delay(10); 
+			//SDL_Delay(10);
 			continue;
 		}
 
@@ -3834,7 +4118,7 @@ static int decode_thread(void *arg) {
 			//further frames
 			usleep(10000);//Sleep for 10ms
 			//usleep(10000); //Sleep for 10ms
-			//SDL_Delay(10); 
+			//SDL_Delay(10);
 			continue;
 		}
 #endif
@@ -3843,7 +4127,7 @@ static int decode_thread(void *arg) {
 			/* wait 10 ms */
 			usleep(10000); //Sleep for 10ms
 			//usleep(10000); //Sleep for 10ms
-			//SDL_Delay(10); 
+			//SDL_Delay(10);
 			continue;
 		}
 
@@ -3995,10 +4279,10 @@ static int decode_thread(void *arg) {
 				in_sync = false;
 				usleep(10000);
 				continue;
-				//return 1; 
+				//return 1;
 			}
 		} else {
-			// __android_log_print(ANDROID_LOG_INFO, "BroovPlayer", "OUT_OF_SYNC videoq.nb_packets:%d", is->videoq.nb_packets);  
+			// __android_log_print(ANDROID_LOG_INFO, "BroovPlayer", "OUT_OF_SYNC videoq.nb_packets:%d", is->videoq.nb_packets);
 			if (is->videoq.size < BROOV_VIDEO_MIN_BUFFER_SIZE)
 			//if (is->videoq.size < 256000)
 			//if (is->videoq.size < 100KB)
@@ -4103,7 +4387,7 @@ static int decode_thread(void *arg) {
 			avcodec_decode_video2(is->video_st->codec, g_video_frame, &frameFinished, packet);
 			if (frameFinished) {
 
-#ifdef BROOV_VIDEO_SKIP	
+#ifdef BROOV_VIDEO_SKIP
 				if (g_skip_frames) {
 					if (skip_now(is)) {
 						double start_output_picture2;
@@ -4213,7 +4497,7 @@ static int decode_thread(void *arg) {
 
 	}
 
-	//Ask the player_main thread to quit 
+	//Ask the player_main thread to quit
 	if (ret_value != 0) {
 		SDL_Event event;
 
@@ -4495,7 +4779,7 @@ int player_main(int argc, char *argv[], int loop_after_play,
 			}
 
 			//This is an audio stream without video
-			usleep(100000); //Sleep for 100 ms 
+			usleep(100000); //Sleep for 100 ms
 		}
 
 	} // video/audio file processing loop
@@ -4522,11 +4806,11 @@ int player_main(int argc, char *argv[], int loop_after_play,
 
 /*
  * Method to calculate frames per second for the skip_now method logic
- * This implements same method as of calculate_frames_per_second 
- * but it is called in the skip_now logic only for getting the 
+ * This implements same method as of calculate_frames_per_second
+ * but it is called in the skip_now logic only for getting the
  * frame_rate of the file playing
  *
- * Updates global variable player_fps_tempin 
+ * Updates global variable player_fps_tempin
  * The numberofskipped variable is incremented for the number of times skipped
  *
  */
@@ -4652,11 +4936,11 @@ void initialize_video_skip_variables() {
 }
 
 /*********************************************************************************************************
- * skip_now method returns 
+ * skip_now method returns
  *
  *    0 if false
- *    1 if true 
- * 
+ *    1 if true
+ *
  * Decision maker to skip the frame
  *
  * Logic:
@@ -4699,7 +4983,7 @@ static int skip_now(VideoState *is) {
 #endif
 
 	if (fps_lag <= 0) {
-		//__android_log_print(ANDROID_LOG_INFO, "AV Skip", "No Skip needed, Faster than needed, taken care in refresh_timer");				 
+		//__android_log_print(ANDROID_LOG_INFO, "AV Skip", "No Skip needed, Faster than needed, taken care in refresh_timer");
 		return 1;
 	} else if (fps_lag > 0 && fps_lag < 6) {
 		// Frame Rate on screen is 20 FPS 4:1
@@ -4862,7 +5146,7 @@ int get_frames_to_skip()
 
 	//if (diff < 0.15) return 1;
 	//if (diff < MIN_TIME_TO_WAIT_FOR_SKIP) return 1;
-	//return 0; 
+	//return 0;
 
 	return 1;
 }

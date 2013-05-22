@@ -98,6 +98,7 @@ public final class AVPlayerMain extends ListActivity  {
 	@Override
 	public void onDestroy(){
 		super.onDestroy();
+		finish();
 	}
 
 	/**

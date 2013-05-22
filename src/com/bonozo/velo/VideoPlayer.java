@@ -4,11 +4,7 @@ import java.io.UnsupportedEncodingException;
 import java.net.URLDecoder;
 
 import org.opencv.android.BaseLoaderCallback;
-import org.opencv.android.CameraBridgeViewBase.CvCameraViewListener;
 import org.opencv.android.LoaderCallbackInterface;
-import org.opencv.android.OpenCVLoader;
-import org.opencv.core.Mat;
-import org.opencv.engine.OpenCVEngineInterface.Stub;
 
 import android.app.Activity;
 import android.app.AlertDialog;
@@ -23,7 +19,6 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.Message;
 import android.os.PowerManager;
-import android.os.RemoteException;
 import android.os.SystemClock;
 import android.telephony.PhoneStateListener;
 import android.telephony.TelephonyManager;
@@ -31,6 +26,7 @@ import android.util.Log;
 import android.view.MenuItem;
 import android.view.MotionEvent;
 import android.view.SurfaceHolder;
+import android.view.SurfaceView;
 import android.view.View;
 import android.view.View.OnClickListener;
 import android.view.View.OnTouchListener;
@@ -225,6 +221,8 @@ public class VideoPlayer extends Activity {
 		 * mSeekBar.setOnSeekBarChangeListener(mSeekBarChangeListener);
 		 */
 
+		// mFixedStuff = (SurfaceView) findViewById(R.id.fixedStuff);
+
 		// Find the views whose visibility will change
 		mSeekBar = (SeekBar) findViewById(R.id.progressbar);
 
@@ -250,6 +248,8 @@ public class VideoPlayer extends Activity {
 
 		imgText = (TextView) findViewById(R.id.currentspeed);
 
+		imgPoints = (TextView) findViewById(R.id.currentpoints);
+
 		mProgressBar = (ProgressBar) findViewById(R.id.progress);
 
 		// trScrolledTime = findViewById(R.id.trscrolledtime);
@@ -268,14 +268,14 @@ public class VideoPlayer extends Activity {
 		imgPlay.setOnTouchListener(imgPlayTouchListener);
 		imgBackward.setOnTouchListener(imgPrevTouchListener);
 		imgForward.setOnTouchListener(imgNextTouchListener);
-		
+
 		// imgForward.setOnTouchListener(imgForwardTouchListener);
 		// imgBackward.setOnTouchListener(imgBackwardTouchListener);
 
 		imgLogo.setOnTouchListener(imgCalculateSpeedTouchListener);
 
 		mSeekBar.setOnSeekBarChangeListener(mSeekBarChangeListener);
-		
+
 		/*
 		 * imgAspectRatio.setOnTouchListener(imgAspectRatioTouchListener);
 		 * imgPlay.setOnTouchListener(imgPlayTouchListener);
@@ -427,7 +427,7 @@ public class VideoPlayer extends Activity {
 		// a
 		// parameter
 		// here
-		myHandler.sendMessageDelayed(m, 10000);
+		myHandler.sendMessageDelayed(m, 20000);
 
 		current_position = 1;
 
@@ -492,6 +492,10 @@ public class VideoPlayer extends Activity {
 
 			if (drawView.calculatedSpeed > 0 && !stageMsgDisplayed) {
 				speedCalculated(drawView.calculatedSpeed);
+			}
+
+			if (drawView.points.trim().length() > 0) {
+				// displayPoints(drawView.points.trim());
 			}
 
 			// Thread.currentThread().setPriority(Thread.MIN_PRIORITY);
@@ -661,8 +665,8 @@ public class VideoPlayer extends Activity {
 			// 10F ));
 			// System.out.println("Progress new:"+progress);
 			demoRenderer.nativePlayerSeek(progress);
-			restartUpdater();			
-			
+			restartUpdater();
+
 			Handler myHandler = new stopPlay();
 			Message m = new Message();
 
@@ -730,7 +734,6 @@ public class VideoPlayer extends Activity {
 			if (event.getAction() == MotionEvent.ACTION_UP) {
 
 				calculatingSpeed = false;
-				MyView.calculatingSpeed = 0;
 
 				if (current_position == 1) {
 					current_position = 2;
@@ -742,9 +745,12 @@ public class VideoPlayer extends Activity {
 					current_message = msg3;
 					show(current_message);
 					stageMsgDisplayed = true;
+				} else if (current_position == 3) {
+					current_position = 4;
+					fieldSize();
 				} else {
-					if (current_position == 3)
-						current_position = 4;
+					if (current_position == 4)
+						current_position = 5;
 
 					current_message = msg4;
 					stageMsgDisplayed = false;
@@ -752,7 +758,6 @@ public class VideoPlayer extends Activity {
 				}
 			}
 
-			MyView.calculatingSpeed = 1;
 			return true;
 		}
 	};
@@ -851,12 +856,12 @@ public class VideoPlayer extends Activity {
 			@Override
 			public void onClick(DialogInterface dialog, int which) {
 				switch (current_position) {
-				case 2:
+				case 3:
 					drawView.mCurrentPlayer = VIEW_MODE_PITCHER;
 					mHideContainer.setVisibility(View.INVISIBLE);
 					drawView.canDraw = true;
 					break;
-				case 3:
+				case 2:
 					mHideContainer.setVisibility(View.INVISIBLE);
 					drawView.mCurrentPlayer = VIEW_MODE_CATCHER;
 					drawView.canDraw = true;
@@ -879,6 +884,8 @@ public class VideoPlayer extends Activity {
 			@Override
 			public void onClick(DialogInterface dialog, int which) {
 				calculatingSpeed = true;
+				stageMsgDisplayed = false;
+				drawView.calculatedSpeed = 0;
 				MyView.calculatingSpeed = 1;
 				clickButton(imgPlay);
 				dialog.dismiss();
@@ -898,16 +905,51 @@ public class VideoPlayer extends Activity {
 
 	}
 
+	public void fieldSize() {
+		AlertDialog.Builder builder = new AlertDialog.Builder(this);
+		builder.setCancelable(true);
+		builder.setTitle("Select Field Size");
+		builder.setInverseBackgroundForced(true);
+		builder.setPositiveButton("60ft",
+				new DialogInterface.OnClickListener() {
+					@Override
+					public void onClick(DialogInterface dialog, int which) {
+						drawView.fieldSize = 60;
+						dialog.dismiss();
+					}
+				});
+
+		builder.setNegativeButton("45ft",
+				new DialogInterface.OnClickListener() {
+
+					@Override
+					public void onClick(DialogInterface dialog, int which) {
+						drawView.fieldSize = 45;
+						dialog.dismiss();
+					}
+				});
+
+		AlertDialog alert = builder.create();
+		alert.show();
+
+	}
+
 	public void speedCalculated(double calculatedSpeed) {
 
 		clickButton(imgPlay);
 
-		msg4 = "THE CALCULATED SPEED IS: " + calculatedSpeed + " MPH";
+		msg4 = "THE CALCULATED SPEED IS: " + calculatedSpeed
+				+ " MPH; Recalculate?";
 
 		imgText.setText(calculatedSpeed + " MPH");
 
-		show(msg4);
+		// show(msg4);
+		confirm(msg4);
 		stageMsgDisplayed = true;
+	}
+
+	public void displayPoints(String points) {
+		imgPoints.setText(points);
 	}
 
 	public void clickButton(View button) {
@@ -960,6 +1002,7 @@ public class VideoPlayer extends Activity {
 	private String TAG = "VideoPlayer";
 
 	private MyView drawView;
+	// private SurfaceView mFixedStuff;
 
 	// private ColorBlobDetectionView mView;
 	private FrameLayout mParent;
@@ -1001,12 +1044,13 @@ public class VideoPlayer extends Activity {
 	View imgLogo;
 
 	TextView imgText;
+	TextView imgPoints;
 
 	ProgressBar mProgressBar;
 
 	public static String msg1 = "STEP TO BEGINNING OF PITCH RELEASE";
-	public static String msg2 = "SELECT PITCHER";
-	public static String msg3 = "SELECT CATCHER";
+	public static String msg3 = "SELECT PITCHER";
+	public static String msg2 = "SELECT CATCHER";
 	public String msg4 = "THE CALCULATED SPEED IS ";
 
 	String current_message = msg1;
